@@ -22,8 +22,16 @@ services:
       - DB_USER=${MYSQL_USER}
       - DB_PASSWORD=${MYSQL_PASSWORD}
       - DB_NAME=${MYSQL_DATABASE}
+      # Redis Queue Configuration for Scaling (Development)
+      - ENABLE_QUEUE_MODE=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - QUEUE_CONCURRENCY=30
+      - QUEUE_MAX_JOBS=500
     depends_on:
       - mariadb
+      - redis
 
   mariadb:
     image: mariadb:10.11.5
@@ -38,6 +46,29 @@ services:
     volumes:
       - mariadb_data_dev:/var/lib/mysql
 
+  # Redis for development scaling queue system
+  redis:
+    image: redis:7-alpine
+    container_name: uptime-kuma-redis-dev
+    ports:
+      - "6380:6379"  # Use different port for dev to avoid conflicts
+    volumes:
+      - redis_data_dev:/data
+    command: >
+      redis-server 
+      --appendonly yes 
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   mariadb_data_dev:
+  redis_data_dev:
 

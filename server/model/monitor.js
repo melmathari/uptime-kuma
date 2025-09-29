@@ -341,7 +341,7 @@ class Monitor extends BeanModel {
     }
 
     /**
-     * Start monitor
+     * Start monitor (legacy method - preserved for backward compatibility)
      * @param {Server} io Socket server instance
      * @returns {Promise<void>}
      */
@@ -1036,6 +1036,552 @@ class Monitor extends BeanModel {
             }, this.interval * 1000);
         } else {
             safeBeat();
+        }
+    }
+
+    /**
+     * Perform monitor check (extracted for queue system compatibility)
+     * This method contains the core monitoring logic without the setTimeout scheduling
+     * @param {Server} io Socket server instance
+     * @returns {Promise<void>}
+     */
+    async performCheck(io) {
+        let previousBeat = null;
+        let retries = 0;
+
+        this.prometheus = new Prometheus(this);
+
+        // Get previous heartbeat
+        if (!previousBeat || this.type === "push") {
+            previousBeat = await R.findOne("heartbeat", " monitor_id = ? ORDER BY time DESC", [
+                this.id,
+            ]);
+            if (previousBeat) {
+                retries = previousBeat.retries;
+            }
+        }
+
+        const isFirstBeat = !previousBeat;
+
+        let bean = R.dispense("heartbeat");
+        bean.monitor_id = this.id;
+        bean.time = R.isoDateTimeMillis(dayjs.utc());
+        bean.status = DOWN;
+        bean.downCount = previousBeat?.downCount || 0;
+
+        if (this.isUpsideDown()) {
+            bean.status = flipStatus(bean.status);
+        }
+
+        // Runtime patch timeout if it is 0
+        if (!this.timeout || this.timeout <= 0) {
+            this.timeout = this.interval * 1000 * 0.8;
+        }
+
+        let tlsInfo = undefined;
+
+        try {
+            // Execute the same monitoring logic as the original beat() function
+            if (await Monitor.isUnderMaintenance(this.id)) {
+                bean.msg = "Monitor under maintenance";
+                bean.status = MAINTENANCE;
+            } else {
+                // Call the appropriate monitor type checker
+                await this.executeMonitorTypeCheck(bean, tlsInfo);
+            }
+
+        } catch (e) {
+            log.debug("monitor", `[${this.name}] Failing: ${e.message} | Type: ${this.type}`);
+            bean.msg = e.message;
+            bean.status = PENDING;
+        }
+
+        // Handle retry logic
+        if (bean.status === PENDING) {
+            if (retries < this.maxretries) {
+                retries++;
+                bean.retries = retries;
+            } else {
+                bean.status = DOWN;
+                bean.retries = retries;
+            }
+        } else {
+            retries = 0;
+        }
+
+        // Log status
+        if (bean.status === UP) {
+            log.debug("monitor", `Monitor #${this.id} '${this.name}': Successful Response: ${bean.ping} ms | Type: ${this.type}`);
+        } else if (bean.status === PENDING) {
+            log.warn("monitor", `Monitor #${this.id} '${this.name}': Pending: ${bean.msg} | Max retries: ${this.maxretries} | Retry: ${retries} | Type: ${this.type}`);
+        } else if (bean.status === MAINTENANCE) {
+            log.warn("monitor", `Monitor #${this.id} '${this.name}': Under Maintenance | Type: ${this.type}`);
+        } else {
+            log.warn("monitor", `Monitor #${this.id} '${this.name}': Failing: ${bean.msg} | Type: ${this.type} | Down Count: ${bean.downCount}`);
+        }
+
+        // Calculate uptime
+        let uptimeCalculator = await UptimeCalculator.getUptimeCalculator(this.id);
+        let endTimeDayjs = await uptimeCalculator.update(bean.status, parseFloat(bean.ping));
+        bean.end_time = R.isoDateTimeMillis(endTimeDayjs);
+
+        // Send to frontend
+        log.debug("monitor", `[${this.name}] Send to socket`);
+        io.to(this.user_id).emit("heartbeat", bean.toJSON());
+        Monitor.sendStats(io, this.id, this.user_id);
+
+        // Store to database
+        log.debug("monitor", `[${this.name}] Store`);
+        await R.store(bean);
+
+        log.debug("monitor", `[${this.name}] prometheus.update`);
+        this.prometheus?.update(bean, tlsInfo);
+
+        // Handle notifications
+        if (Monitor.isImportantForNotification(isFirstBeat, previousBeat?.status, bean.status)) {
+            bean.downCount = 0;
+            log.debug("monitor", `[${this.name}] sendNotification`);
+            await Monitor.sendNotification(isFirstBeat, this, bean);
+        } else {
+            if (bean.status === DOWN && this.resendInterval > 0) {
+                ++bean.downCount;
+                if (bean.downCount >= this.resendInterval) {
+                    log.debug("monitor", `[${this.name}] sendNotification again: Down Count: ${bean.downCount} | Resend Interval: ${this.resendInterval}`);
+                    await Monitor.sendNotification(isFirstBeat, this, bean);
+                    bean.downCount = 0;
+                }
+            }
+        }
+    }
+
+    /**
+     * Execute monitor type specific check logic
+     * @param {object} bean Heartbeat bean
+     * @param {object} tlsInfo TLS information object
+     * @returns {Promise<void>}
+     */
+    async executeMonitorTypeCheck(bean, tlsInfo) {
+        // This contains the extracted monitor type checking logic
+        // The implementation would move the existing type-specific code here
+        // For now, we'll use the monitor type system
+        const monitorType = UptimeKumaServer.monitorTypeList[this.type];
+        if (monitorType) {
+            await monitorType.check(this, bean, UptimeKumaServer.getInstance());
+        } else {
+            // Fallback to legacy type checking for compatibility
+            await this.legacyTypeCheck(bean, tlsInfo);
+        }
+    }
+
+    /**
+     * Legacy type checking for backward compatibility
+     * @param {object} bean Heartbeat bean
+     * @param {object} tlsInfo TLS information
+     * @returns {Promise<void>}
+     */
+    async legacyTypeCheck(bean, tlsInfo) {
+        // This contains the extracted monitor type checking logic from the original beat() function
+        if (this.type === "http" || this.type === "keyword" || this.type === "json-query") {
+            await this.handleHttpTypeChecks(bean, tlsInfo);
+        } else if (this.type === "port") {
+            bean.ping = await tcping(this.hostname, this.port);
+            bean.msg = "";
+            bean.status = UP;
+        } else if (this.type === "ping") {
+            bean.ping = await ping(this.hostname, this.ping_count, "", this.ping_numeric, this.packetSize, this.timeout, this.ping_per_request_timeout);
+            bean.msg = "";
+            bean.status = UP;
+        } else if (this.type === "push") {
+            throw new Error("Push monitors should not be processed through queue system");
+        } else {
+            await this.handleOtherTypeChecks(bean, tlsInfo);
+        }
+    }
+
+    /**
+     * Handle HTTP, keyword, and json-query monitor types
+     * @param {object} bean Heartbeat bean
+     * @param {object} tlsInfo TLS information
+     * @returns {Promise<void>}
+     */
+    async handleHttpTypeChecks(bean, tlsInfo) {
+        // Do not do any queries/high loading things before the "bean.ping"
+        let startTime = dayjs().valueOf();
+
+        // HTTP basic auth
+        let basicAuthHeader = {};
+        if (this.auth_method === "basic") {
+            basicAuthHeader = {
+                "Authorization": "Basic " + this.encodeBase64(this.basic_auth_user, this.basic_auth_pass),
+            };
+        }
+
+        // OIDC: Basic client credential flow.
+        let oauth2AuthHeader = {};
+        if (this.auth_method === "oauth2-cc") {
+            try {
+                if (this.oauthAccessToken === undefined || new Date(this.oauthAccessToken.expires_at * 1000) <= new Date()) {
+                    this.oauthAccessToken = await this.makeOidcTokenClientCredentialsRequest();
+                }
+                oauth2AuthHeader = {
+                    "Authorization": this.oauthAccessToken.token_type + " " + this.oauthAccessToken.access_token,
+                };
+            } catch (e) {
+                throw new Error("The oauth config is invalid. " + e.message);
+            }
+        }
+
+        let agentFamily = undefined;
+        if (this.ipFamily === "ipv4") {
+            agentFamily = 4;
+        }
+        if (this.ipFamily === "ipv6") {
+            agentFamily = 6;
+        }
+
+        const httpsAgentOptions = {
+            maxCachedSessions: 0,
+            rejectUnauthorized: !this.getIgnoreTls(),
+            secureOptions: crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT,
+            autoSelectFamily: true,
+            ...(agentFamily ? { family: agentFamily } : {})
+        };
+
+        const httpAgentOptions = {
+            maxCachedSessions: 0,
+            autoSelectFamily: true,
+            ...(agentFamily ? { family: agentFamily } : {})
+        };
+
+        log.debug("monitor", `[${this.name}] Prepare Options for axios`);
+
+        let contentType = null;
+        let bodyValue = null;
+
+        if (this.body && (typeof this.body === "string" && this.body.trim().length > 0)) {
+            if (!this.httpBodyEncoding || this.httpBodyEncoding === "json") {
+                try {
+                    bodyValue = JSON.parse(this.body);
+                    contentType = "application/json";
+                } catch (e) {
+                    throw new Error("Your JSON body is invalid. " + e.message);
+                }
+            } else if (this.httpBodyEncoding === "form") {
+                bodyValue = this.body;
+                contentType = "application/x-www-form-urlencoded";
+            } else if (this.httpBodyEncoding === "xml") {
+                bodyValue = this.body;
+                contentType = "text/xml; charset=utf-8";
+            }
+        }
+
+        // Axios Options
+        const options = {
+            url: this.url,
+            method: (this.method || "get").toLowerCase(),
+            timeout: this.timeout * 1000,
+            headers: {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+                ...(contentType ? { "Content-Type": contentType } : {}),
+                ...(basicAuthHeader),
+                ...(oauth2AuthHeader),
+                ...(this.headers ? JSON.parse(this.headers) : {})
+            },
+            maxRedirects: this.maxredirects,
+            validateStatus: (status) => {
+                return checkStatusCode(status, this.getAcceptedStatuscodes());
+            },
+            signal: axiosAbortSignal((this.timeout + 10) * 1000),
+        };
+
+        if (bodyValue) {
+            options.data = bodyValue;
+        }
+
+        if (this.cacheBust) {
+            const randomFloatString = Math.random().toString(36);
+            const cacheBust = randomFloatString.substring(2);
+            options.params = {
+                uptime_kuma_cachebuster: cacheBust,
+            };
+        }
+
+        if (this.proxy_id) {
+            const proxy = await R.load("proxy", this.proxy_id);
+
+            if (proxy && proxy.active) {
+                const { httpAgent, httpsAgent } = Proxy.createAgents(proxy, {
+                    httpsAgentOptions: httpsAgentOptions,
+                    httpAgentOptions: httpAgentOptions,
+                });
+
+                options.proxy = false;
+                options.httpAgent = httpAgent;
+                options.httpsAgent = httpsAgent;
+            }
+        }
+
+        if (!options.httpAgent) {
+            options.httpAgent = new http.Agent(httpAgentOptions);
+        }
+
+        if (!options.httpsAgent) {
+            let jar = new CookieJar();
+            let httpsCookieAgentOptions = {
+                ...httpsAgentOptions,
+                cookies: { jar }
+            };
+            options.httpsAgent = new HttpsCookieAgent(httpsCookieAgentOptions);
+        }
+
+        if (this.auth_method === "mtls") {
+            if (this.tlsCert !== null && this.tlsCert !== "") {
+                options.httpsAgent.options.cert = Buffer.from(this.tlsCert);
+            }
+            if (this.tlsCa !== null && this.tlsCa !== "") {
+                options.httpsAgent.options.ca = Buffer.from(this.tlsCa);
+            }
+            if (this.tlsKey !== null && this.tlsKey !== "") {
+                options.httpsAgent.options.key = Buffer.from(this.tlsKey);
+            }
+        }
+
+        // Store tlsInfo when secureConnect event is emitted
+        options.httpsAgent.once("keylog", async (line, tlsSocket) => {
+            tlsSocket.once("secureConnect", async () => {
+                tlsInfo = checkCertificate(tlsSocket);
+                tlsInfo.valid = tlsSocket.authorized || false;
+                await this.handleTlsInfo(tlsInfo);
+            });
+        });
+
+        log.debug("monitor", `[${this.name}] Axios Request`);
+
+        // Make Request
+        let res = await this.makeAxiosRequest(options);
+
+        bean.msg = `${res.status} - ${res.statusText}`;
+        bean.ping = dayjs().valueOf() - startTime;
+
+        // fallback for if keylog event is not emitted
+        if (this.getUrl()?.protocol === "https:" && tlsInfo.valid === undefined) {
+            const tlsSocket = res.request.res.socket;
+            if (tlsSocket) {
+                tlsInfo = checkCertificate(tlsSocket);
+                tlsInfo.valid = tlsSocket.authorized || false;
+                await this.handleTlsInfo(tlsInfo);
+            }
+        }
+
+        if (this.type === "http") {
+            bean.status = UP;
+        } else if (this.type === "keyword") {
+            let data = res.data;
+            if (typeof data !== "string") {
+                data = JSON.stringify(data);
+            }
+
+            let keywordFound = data.includes(this.keyword);
+            if (keywordFound === !this.isInvertKeyword()) {
+                bean.msg += ", keyword " + (keywordFound ? "is" : "not") + " found";
+                bean.status = UP;
+            } else {
+                data = data.replace(/<[^>]*>?|[\n\r]|\s+/gm, " ").trim();
+                if (data.length > 50) {
+                    data = data.substring(0, 47) + "...";
+                }
+                throw new Error(bean.msg + ", but keyword is " +
+                    (keywordFound ? "present" : "not") + " in [" + data + "]");
+            }
+        } else if (this.type === "json-query") {
+            let data = res.data;
+            const { status, response } = await evaluateJsonQuery(data, this.jsonPath, this.jsonPathOperator, this.expectedValue);
+
+            if (status) {
+                bean.status = UP;
+                bean.msg = `JSON query passes (comparing ${response} ${this.jsonPathOperator} ${this.expectedValue})`;
+            } else {
+                throw new Error(`JSON query does not pass (comparing ${response} ${this.jsonPathOperator} ${this.expectedValue})`);
+            }
+        }
+    }
+
+    /**
+     * Handle other monitor types (steam, gamedig, docker, databases, etc.)
+     * @param {object} bean Heartbeat bean
+     * @param {object} tlsInfo TLS information
+     * @returns {Promise<void>}
+     */
+    async handleOtherTypeChecks(bean, tlsInfo) {
+        if (this.type === "steam") {
+            const steamApiUrl = "https://api.steampowered.com/IGameServersService/GetServerList/v1/";
+            const steamAPIKey = await setting("steamAPIKey");
+            const filter = `addr\\${this.hostname}:${this.port}`;
+
+            if (!steamAPIKey) {
+                throw new Error("Steam API Key not found");
+            }
+
+            let res = await axios.get(steamApiUrl, {
+                timeout: this.timeout * 1000,
+                headers: { "Accept": "*/*" },
+                httpsAgent: new https.Agent({
+                    maxCachedSessions: 0,
+                    rejectUnauthorized: !this.getIgnoreTls(),
+                    secureOptions: crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT,
+                }),
+                httpAgent: new http.Agent({ maxCachedSessions: 0 }),
+                maxRedirects: this.maxredirects,
+                validateStatus: (status) => checkStatusCode(status, this.getAcceptedStatuscodes()),
+                params: { filter: filter,
+                    key: steamAPIKey }
+            });
+
+            if (res.data.response && res.data.response.servers && res.data.response.servers.length > 0) {
+                bean.status = UP;
+                bean.msg = res.data.response.servers[0].name;
+                try {
+                    bean.ping = await ping(this.hostname, PING_COUNT_DEFAULT, "", true, this.packetSize, PING_GLOBAL_TIMEOUT_DEFAULT, PING_PER_REQUEST_TIMEOUT_DEFAULT);
+                } catch (_) { }
+            } else {
+                throw new Error("Server not found on Steam");
+            }
+
+        } else if (this.type === "gamedig") {
+            const state = await Gamedig.query({
+                type: this.game,
+                host: this.hostname,
+                port: this.port,
+                givenPortOnly: this.getGameDigGivenPortOnly(),
+            });
+            bean.msg = state.name;
+            bean.status = UP;
+            bean.ping = state.ping;
+
+        } else if (this.type === "docker") {
+            const options = {
+                url: `/containers/${this.docker_container}/json`,
+                timeout: this.interval * 1000 * 0.8,
+                headers: { "Accept": "*/*" },
+                httpsAgent: new https.Agent({
+                    maxCachedSessions: 0,
+                    rejectUnauthorized: !this.getIgnoreTls(),
+                    secureOptions: crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT,
+                }),
+                httpAgent: new http.Agent({ maxCachedSessions: 0 }),
+            };
+
+            const dockerHost = await R.load("docker_host", this.docker_host);
+            if (!dockerHost) {
+                throw new Error("Failed to load docker host config");
+            }
+
+            if (dockerHost._dockerType === "socket") {
+                options.socketPath = dockerHost._dockerDaemon;
+            } else if (dockerHost._dockerType === "tcp") {
+                options.baseURL = DockerHost.patchDockerURL(dockerHost._dockerDaemon);
+                options.httpsAgent = new https.Agent(
+                    await DockerHost.getHttpsAgentOptions(dockerHost._dockerType, options.baseURL)
+                );
+            }
+
+            let res = await axios.request(options);
+            if (res.data.State.Running) {
+                if (res.data.State.Health && res.data.State.Health.Status !== "healthy") {
+                    bean.status = PENDING;
+                    bean.msg = res.data.State.Health.Status;
+                } else {
+                    bean.status = UP;
+                    bean.msg = res.data.State.Health ? res.data.State.Health.Status : res.data.State.Status;
+                }
+            } else {
+                throw Error("Container State is " + res.data.State.Status);
+            }
+
+        } else if (this.type === "sqlserver") {
+            let startTime = dayjs().valueOf();
+            await mssqlQuery(this.databaseConnectionString, this.databaseQuery || "SELECT 1");
+            bean.msg = "";
+            bean.status = UP;
+            bean.ping = dayjs().valueOf() - startTime;
+
+        } else if (this.type === "postgres") {
+            let startTime = dayjs().valueOf();
+            await postgresQuery(this.databaseConnectionString, this.databaseQuery || "SELECT 1");
+            bean.msg = "";
+            bean.status = UP;
+            bean.ping = dayjs().valueOf() - startTime;
+
+        } else if (this.type === "mysql") {
+            let startTime = dayjs().valueOf();
+            let mysqlPassword = this.radiusPassword;
+            bean.msg = await mysqlQuery(this.databaseConnectionString, this.databaseQuery || "SELECT 1", mysqlPassword);
+            bean.status = UP;
+            bean.ping = dayjs().valueOf() - startTime;
+
+        } else if (this.type === "radius") {
+            let startTime = dayjs().valueOf();
+            let port = this.port == null ? 1812 : this.port;
+            const resp = await radius(
+                this.hostname, this.radiusUsername, this.radiusPassword,
+                this.radiusCalledStationId, this.radiusCallingStationId,
+                this.radiusSecret, port, this.interval * 1000 * 0.4,
+            );
+            bean.msg = resp.code;
+            bean.status = UP;
+            bean.ping = dayjs().valueOf() - startTime;
+
+        } else if (this.type === "redis") {
+            let startTime = dayjs().valueOf();
+            bean.msg = await redisPingAsync(this.databaseConnectionString, !this.ignoreTls);
+            bean.status = UP;
+            bean.ping = dayjs().valueOf() - startTime;
+
+        } else if (this.type === "grpc-keyword") {
+            let startTime = dayjs().valueOf();
+            const options = {
+                grpcUrl: this.grpcUrl,
+                grpcProtobufData: this.grpcProtobuf,
+                grpcServiceName: this.grpcServiceName,
+                grpcEnableTls: this.grpcEnableTls,
+                grpcMethod: this.grpcMethod,
+                grpcBody: this.grpcBody,
+            };
+            const response = await grpcQuery(options);
+            bean.ping = dayjs().valueOf() - startTime;
+
+            let responseData = response.data;
+            if (responseData.length > 50) {
+                responseData = responseData.toString().substring(0, 47) + "...";
+            }
+
+            if (response.code !== 1) {
+                bean.status = DOWN;
+                bean.msg = `Error in send gRPC ${response.code} ${response.errorMessage}`;
+            } else {
+                let keywordFound = response.data.toString().includes(this.keyword);
+                if (keywordFound === !this.isInvertKeyword()) {
+                    bean.status = UP;
+                    bean.msg = `${responseData}, keyword [${this.keyword}] ${keywordFound ? "is" : "not"} found`;
+                } else {
+                    bean.status = DOWN;
+                    bean.msg = `, but keyword [${this.keyword}] is ${keywordFound ? "present" : "not"} in [" + ${responseData} + "]`;
+                }
+            }
+
+        } else if (this.type === "kafka-producer") {
+            let startTime = dayjs().valueOf();
+            bean.msg = await kafkaProducerAsync(
+                JSON.parse(this.kafkaProducerBrokers), this.kafkaProducerTopic,
+                this.kafkaProducerMessage, this.kafkaProducerAllowAutoTopicCreation,
+                this.kafkaProducerSsl, this.kafkaProducerAllowAutoTopicCreation,
+                this.kafkaProducerSaslOptions,
+            );
+            bean.status = UP;
+            bean.ping = dayjs().valueOf() - startTime;
+
+        } else {
+            throw new Error(`Monitor type '${this.type}' not supported in legacy check - register it in UptimeKumaServer.monitorTypeList instead`);
         }
     }
 

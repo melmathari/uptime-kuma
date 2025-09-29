@@ -1631,7 +1631,9 @@ let needSetup = false;
         } else {
             log.info("server", `Listening on ${port}`);
         }
-        await startMonitors();
+        // Use queue integration for starting monitors
+        const { queueIntegration } = require("./queue/queue-integration");
+        await queueIntegration.startAllMonitors(io);
 
         // Put this here. Start background jobs after the db and server is ready to prevent clear up during db migration.
         await initBackgroundJobs();
@@ -1780,12 +1782,15 @@ async function startMonitor(userID, monitorID) {
         monitorID,
     ]);
 
+    // Use queue integration for starting monitor
+    const { queueIntegration } = require("./queue/queue-integration");
+
     if (monitor.id in server.monitorList) {
-        await server.monitorList[monitor.id].stop();
+        await queueIntegration.stopMonitor(monitor.id);
     }
 
     server.monitorList[monitor.id] = monitor;
-    await monitor.start(io);
+    await queueIntegration.startMonitor(monitor.id, io);
 }
 
 /**
@@ -1814,9 +1819,13 @@ async function pauseMonitor(userID, monitorID) {
         userID,
     ]);
 
+    // Use queue integration for stopping monitor
+    const { queueIntegration } = require("./queue/queue-integration");
+    await queueIntegration.stopMonitor(monitorID);
+
     if (monitorID in server.monitorList) {
         await server.monitorList[monitorID].stop();
-        server.monitorList[monitorID].active = 0;
+        delete server.monitorList[monitorID];
     }
 }
 

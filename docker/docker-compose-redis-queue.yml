@@ -1,0 +1,134 @@
+version: '3.8'
+
+# StatusCobra V2 with Redis Queue for Scaling
+# This configuration enables handling thousands of monitors using Redis queues
+
+services:
+  uptime-kuma:
+    container_name: uptime-kuma-scaled
+    image: louislam/uptime-kuma:2
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - uptime-kuma:/app/data
+    environment:
+      # Enable Redis Queue Mode for scaling
+      - ENABLE_QUEUE_MODE=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=0
+      - QUEUE_CONCURRENCY=50
+      - QUEUE_MAX_JOBS=1000
+      - NODE_ENV=production
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - uptime-kuma-network
+    healthcheck:
+      test: ["CMD", "node", "extra/healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Redis for queue management
+  redis:
+    container_name: uptime-kuma-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    command: >
+      redis-server 
+      --appendonly yes 
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+    networks:
+      - uptime-kuma-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Redis Commander for queue monitoring
+  redis-commander:
+    container_name: uptime-kuma-redis-commander
+    image: rediscommander/redis-commander:latest
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=redis:redis:6379:0:${REDIS_PASSWORD:-}
+    depends_on:
+      - redis
+    networks:
+      - uptime-kuma-network
+    profiles:
+      - monitoring
+
+  # Optional: Multiple worker instances for horizontal scaling
+  uptime-kuma-worker-1:
+    container_name: uptime-kuma-worker-1
+    image: louislam/uptime-kuma:2
+    restart: unless-stopped
+    environment:
+      - ENABLE_QUEUE_MODE=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=0
+      - QUEUE_CONCURRENCY=30
+      - NODE_ENV=production
+      - WORKER_MODE=true  # Only process queue, don't serve HTTP
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - uptime-kuma-network
+    profiles:
+      - workers
+    command: ["node", "server/worker.js"]
+
+  uptime-kuma-worker-2:
+    container_name: uptime-kuma-worker-2
+    image: louislam/uptime-kuma:2
+    restart: unless-stopped
+    environment:
+      - ENABLE_QUEUE_MODE=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=0
+      - QUEUE_CONCURRENCY=30
+      - NODE_ENV=production
+      - WORKER_MODE=true
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - uptime-kuma-network
+    profiles:
+      - workers
+    command: ["node", "server/worker.js"]
+
+volumes:
+  uptime-kuma:
+    name: uptime-kuma-data
+  redis-data:
+    name: uptime-kuma-redis-data
+
+networks:
+  uptime-kuma-network:
+    name: uptime-kuma-network
+    driver: bridge

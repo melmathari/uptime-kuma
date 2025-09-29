@@ -23,6 +23,13 @@ services:
       - DB_USER=${MYSQL_USER}
       - DB_PASSWORD=${MYSQL_PASSWORD}
       - DB_NAME=${MYSQL_DATABASE}
+      # Redis Queue Configuration for Scaling
+      - ENABLE_QUEUE_MODE=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - QUEUE_CONCURRENCY=50
+      - QUEUE_MAX_JOBS=1000
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "extra/healthcheck"]
@@ -32,6 +39,7 @@ services:
       start_period: 180s
     depends_on:
       - mariadb
+      - redis
 
   mariadb:
     image: mariadb:10.11.5
@@ -45,6 +53,29 @@ services:
       - mariadb_data:/var/lib/mysql
     restart: unless-stopped
 
+  # Redis for scaling queue system
+  redis:
+    image: redis:7-alpine
+    container_name: uptime-kuma-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server 
+      --appendonly yes 
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   uptime-kuma:  # Define the named volume for app data
   mariadb_data:  # Define the named volume for database
+  redis_data:  # Define the named volume for Redis data
