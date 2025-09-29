@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  uptime-kuma:
+    container_name: uptime-kuma
+    build:
+      context: ..
+      dockerfile: docker/dockerfile
+      target: build  # Use the build target to ensure frontend is built
+    command: ["sh", "-c", "npm ci && npm run build && node server/server.js"]
+    ports:
+      - "3001:3001"
+    volumes:
+      - uptime-kuma:/app/data  # Persist data using named volume
+      - ../server:/app/server  # Local source code
+      - ../db:/app/db  # Local database code
+    environment:
+      - NODE_ENV=production
+      - UPTIME_KUMA_IS_CONTAINER=1
+      - DB_TYPE=mariadb
+      - DB_HOST=${MYSQL_HOST}
+      - DB_PORT=3306
+      - DB_USER=${MYSQL_USER}
+      - DB_PASSWORD=${MYSQL_PASSWORD}
+      - DB_NAME=${MYSQL_DATABASE}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "extra/healthcheck"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 180s
+    depends_on:
+      - mariadb
+
+  mariadb:
+    image: mariadb:10.11.5
+    container_name: uptime-kuma-mariadb
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    restart: unless-stopped
+
+volumes:
+  uptime-kuma:  # Define the named volume for app data
+  mariadb_data:  # Define the named volume for database

@@ -3,12 +3,41 @@ version: '3.8'
 services:
   uptime-kuma:
     container_name: uptime-kuma-dev
-    image: louislam/uptime-kuma:nightly2
+    build:
+      context: ..
+      dockerfile: docker/dockerfile
+      target: build
+    command: ["sh", "-c", "npm ci && npm run build && npm run start-server-dev"]
     volumes:
-      #- ./data:/app/data
+      - ../data:/app/data
       - ../server:/app/server
       - ../db:/app/db
     ports:
       - "3001:3001"  # <Host Port>:<Container Port>
-      - "3307:3306"
+    environment:
+      - UPTIME_KUMA_IS_CONTAINER=1
+      - DB_TYPE=mariadb
+      - DB_HOST=${MYSQL_HOST}
+      - DB_PORT=3306
+      - DB_USER=${MYSQL_USER}
+      - DB_PASSWORD=${MYSQL_PASSWORD}
+      - DB_NAME=${MYSQL_DATABASE}
+    depends_on:
+      - mariadb
+
+  mariadb:
+    image: mariadb:10.11.5
+    container_name: uptime-kuma-mariadb-dev
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "3307:3306"  # Expose MariaDB port for development
+    volumes:
+      - mariadb_data_dev:/var/lib/mysql
+
+volumes:
+  mariadb_data_dev:
 

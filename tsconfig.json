@@ -15,7 +15,12 @@
         "strict": true,
         "esModuleInterop": true
     },
-    "files": [
-
+    "include": [
+        "src/**/*",
+        "server/**/*"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist"
     ]
 }
