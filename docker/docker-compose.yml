@@ -6,8 +6,8 @@ services:
     build:
       context: ..
       dockerfile: docker/dockerfile
-      target: build  # Use the build target to ensure frontend is built
-    command: ["sh", "-c", "npm ci && npm run build && node server/server.js"]
+      target: release  # Use the release target for production
+    command: ["node", "server/server.js"]
     ports:
       - "3001:3001"
     volumes:

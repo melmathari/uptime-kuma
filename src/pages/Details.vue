@@ -337,10 +337,12 @@
                 </div>
             </div>
 
-            <!-- Screenshot -->
+            <!-- Screenshot & Video -->
             <div v-if="monitor.type === 'real-browser'" class="shadow-box">
                 <div class="row">
+                    <!-- Screenshot -->
                     <div class="col-md-6 zoom-cursor">
+                        <h5 class="mb-2">{{ $t("Screenshot") }}</h5>
                         <img
                             :src="screenshotURL"
                             style="width: 100%;"
@@ -348,11 +350,30 @@
                             @click="showScreenshotDialog"
                         />
                     </div>
-                    <ScreenshotDialog
-                        ref="screenshotDialog"
-                        :imageURL="screenshotURL"
-                    />
+
+                    <!-- Video (only show if recording is enabled) -->
+                    <div v-if="monitor.recordVideo" class="col-md-6">
+                        <h5 class="mb-2">{{ $t("Video Recording") }}</h5>
+                        <video
+                            v-if="videoURL"
+                            :src="videoURL"
+                            style="width: 100%;"
+                            controls
+                            muted
+                            preload="metadata"
+                        >
+                            {{ $t("Your browser does not support the video element.") }}
+                        </video>
+                        <div v-else class="text-muted">
+                            {{ $t("No video recording available") }}
+                        </div>
+                    </div>
                 </div>
+
+                <ScreenshotDialog
+                    ref="screenshotDialog"
+                    :imageURL="screenshotURL"
+                />
             </div>
 
             <div class="shadow-box table-shadow-box">
@@ -620,6 +641,19 @@ export default {
                 "?time=" +
                 this.cacheTime
             );
+        },
+
+        videoURL() {
+            // Only return video URL if recording is enabled and video exists
+            if (this.monitor.recordVideo && this.monitor.video) {
+                return (
+                    getResBaseURL() +
+                    this.monitor.video +
+                    "?time=" +
+                    this.cacheTime
+                );
+            }
+            return null;
         },
 
         descriptionHTML() {

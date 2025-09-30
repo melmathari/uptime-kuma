@@ -83,9 +83,11 @@ class Monitor extends BeanModel {
     toJSON(preloadData = {}, includeSensitiveData = true) {
 
         let screenshot = null;
+        let video = null;
 
         if (this.type === "real-browser") {
             screenshot = "/screenshots/" + jwt.sign(this.id, UptimeKumaServer.getInstance().jwtSecret) + ".png";
+            video = "/videos/" + jwt.sign(this.id, UptimeKumaServer.getInstance().jwtSecret) + ".webm";
         }
 
         const path = preloadData.paths.get(this.id) || [];
@@ -152,6 +154,9 @@ class Monitor extends BeanModel {
             kafkaProducerAllowAutoTopicCreation: this.getKafkaProducerAllowAutoTopicCreation(),
             kafkaProducerMessage: this.kafkaProducerMessage,
             screenshot,
+            video,
+            recordVideo: this.record_video,
+            testCommands: this.test_commands,
             cacheBust: this.getCacheBust(),
             remote_browser: this.remote_browser,
             snmpOid: this.snmpOid,

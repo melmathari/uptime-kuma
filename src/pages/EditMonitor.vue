@@ -197,6 +197,40 @@
                                         :action="() => $refs.remoteBrowserDialog.show()"
                                     />
                                 </div>
+
+                                <!-- Video Recording Settings -->
+                                <div class="my-3">
+                                    <div class="form-check">
+                                        <input id="record-video" v-model="monitor.recordVideo" class="form-check-input" type="checkbox">
+                                        <label class="form-check-label" for="record-video">
+                                            {{ $t("Record Video") }}
+                                        </label>
+                                        <div class="form-text">
+                                            Record a video of the browser session for visual testing and debugging
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Test Commands (when video recording is enabled) -->
+                                <div v-if="monitor.recordVideo" class="my-3">
+                                    <label for="test-commands" class="form-label">{{ $t("Test Commands (JSON)") }}</label>
+                                    <textarea
+                                        id="test-commands"
+                                        v-model="monitor.testCommands"
+                                        class="form-control"
+                                        rows="10"
+                                        placeholder="[
+  {&quot;action&quot;: &quot;wait&quot;, &quot;duration&quot;: 1000},
+  {&quot;action&quot;: &quot;click&quot;, &quot;selector&quot;: &quot;h1&quot;},
+  {&quot;action&quot;: &quot;scroll&quot;, &quot;direction&quot;: &quot;down&quot;, &quot;pixels&quot;: 300},
+  {&quot;action&quot;: &quot;type&quot;, &quot;selector&quot;: &quot;input&quot;, &quot;text&quot;: &quot;test&quot;},
+  {&quot;action&quot;: &quot;screenshot&quot;}
+]"
+                                    ></textarea>
+                                    <div class="form-text">
+                                        Define test commands in JSON format. Available actions: wait, click, type, scroll, screenshot
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- Game -->
@@ -1225,7 +1259,9 @@ const monitorDefaults = {
     rabbitmqNodes: [],
     rabbitmqUsername: "",
     rabbitmqPassword: "",
-    conditions: []
+    conditions: [],
+    recordVideo: false,
+    testCommands: ""
 };
 
 export default {

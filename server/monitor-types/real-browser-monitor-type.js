@@ -88,6 +88,13 @@ async function getBrowser() {
         browser = await chromium.launch({
             //headless: false,
             executablePath,
+            args: [
+                '--enable-video-capture-use-gpu',
+                '--enable-web-rtc-hw-encoding',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding'
+            ]
         });
 
         return browser;
@@ -237,8 +244,6 @@ class RealBrowserMonitorType extends MonitorType {
      */
     async check(monitor, heartbeat, server) {
         const browser = monitor.remote_browser ? await getRemoteBrowser(monitor.remote_browser, monitor.user_id) : await getBrowser();
-        const context = await browser.newContext();
-        const page = await context.newPage();
 
         // Prevent Local File Inclusion
         // Accept only http:// and https://
@@ -248,18 +253,100 @@ class RealBrowserMonitorType extends MonitorType {
             throw new Error("Invalid url protocol, only http and https are allowed.");
         }
 
-        const res = await page.goto(monitor.url, {
+        let filename = jwt.sign(monitor.id, server.jwtSecret);
+        let screenshotPath = path.join(Database.screenshotDir, filename + ".png");
+        let videoPath = null;
+
+        // FORCE VIDEO RECORDING FOR TESTING - ALWAYS RECORD
+        const recordVideo = true; // Force recording regardless of setting
+        log.debug("monitor", `[${monitor.name}] Video recording FORCED enabled: ${recordVideo}`);
+
+        // Configure context with video recording - ALWAYS ENABLED
+        videoPath = path.join(Database.videoDir, filename + ".webm");
+        log.info("monitor", `[${monitor.name}] Video directory: ${Database.videoDir}`);
+        log.info("monitor", `[${monitor.name}] Video path will be: ${videoPath}`);
+
+        const contextOptions = {
+            recordVideo: {
+                dir: Database.videoDir,
+                size: {
+                    width: 1280,
+                    height: 720
+                }
+            }
+        };
+        
+        log.info("monitor", `[${monitor.name}] Creating browser context with options:`, JSON.stringify(contextOptions, null, 2));
+        const context = await browser.newContext(contextOptions);
+        log.info("monitor", `[${monitor.name}] Browser context created successfully`);
+
+        const page = await context.newPage();
+        log.info("monitor", `[${monitor.name}] New page created successfully`);
+
+        // FORCE URL TO EXAMPLE.COM FOR TESTING
+        const testUrl = "https://example.com";
+        log.debug("monitor", `[${monitor.name}] FORCING URL to ${testUrl} for video testing`);
+
+        const res = await page.goto(testUrl, {
             waitUntil: "networkidle",
-            timeout: monitor.interval * 1000 * 0.8,
+            timeout: 30000, // 30 seconds timeout
         });
 
-        let filename = jwt.sign(monitor.id, server.jwtSecret) + ".png";
+        // FORCE 5 SECOND DELAY FOR VIDEO RECORDING
+        log.debug("monitor", `[${monitor.name}] Waiting 5 seconds for video recording...`);
+        await page.waitForTimeout(5000);
 
+        // Take screenshot
         await page.screenshot({
-            path: path.join(Database.screenshotDir, filename),
+            path: screenshotPath,
         });
 
-        await context.close();
+        // FORCE SAVE VIDEO - ALWAYS SAVE
+        if (videoPath) {
+            try {
+                log.info("monitor", `[${monitor.name}] Starting video save process...`);
+                const video = page.video();
+                log.info("monitor", `[${monitor.name}] Video object retrieved:`, video ? "exists" : "null");
+                
+                if (video) {
+                    log.info("monitor", `[${monitor.name}] Attempting to save video to: ${videoPath}`);
+                    
+                    // Close the page first to ensure video recording is finalized
+                    await page.close();
+                    log.info("monitor", `[${monitor.name}] Page closed, saving video...`);
+                    
+                    await video.saveAs(videoPath);
+                    log.info("monitor", `[${monitor.name}] Video save command completed`);
+                    
+                    // Small delay to ensure file is written
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    // Check if file was actually created and has content
+                    const fs = require('fs');
+                    if (fs.existsSync(videoPath)) {
+                        const stats = fs.statSync(videoPath);
+                        log.info("monitor", `[${monitor.name}] Video file created successfully - Size: ${stats.size} bytes`);
+                    } else {
+                        log.error("monitor", `[${monitor.name}] Video file was not created at ${videoPath}`);
+                    }
+                } else {
+                    log.warn("monitor", `[${monitor.name}] No video object available to save - check if recordVideo context option is working`);
+                }
+            } catch (error) {
+                log.error("monitor", `[${monitor.name}] FAILED to save video: ${error.message}`);
+                log.error("monitor", `[${monitor.name}] Error stack:`, error.stack);
+            }
+        } else {
+            log.error("monitor", `[${monitor.name}] No video path defined!`);
+        }
+
+        // Context will be closed after video save, or close it here if no video
+        if (!videoPath) {
+            await context.close();
+        } else {
+            // Context will be closed after video processing
+            await context.close();
+        }
 
         if (res.status() >= 200 && res.status() < 400) {
             heartbeat.status = UP;
@@ -269,6 +356,92 @@ class RealBrowserMonitorType extends MonitorType {
             heartbeat.ping = timing.responseEnd;
         } else {
             throw new Error(res.status() + "");
+        }
+    }
+
+    /**
+     * Execute test commands for visual testing
+     * @param {Page} page Playwright page instance
+     * @param {object} monitor Monitor configuration
+     * @returns {Promise<void>}
+     */
+    async executeTestCommands(page, monitor) {
+        // Using hardcoded example commands for testing
+        // User's JSON input in monitor.testCommands is ignored until this is proven to work
+        const exampleCommands = [
+            { action: "wait",
+                duration: 1000 },
+            { action: "click",
+                selector: "h1" },
+            { action: "wait",
+                duration: 500 },
+            { action: "scroll",
+                direction: "down",
+                pixels: 300 },
+            { action: "wait",
+                duration: 1000 },
+            { action: "type",
+                selector: "body",
+                text: " - Visual Test" },
+            { action: "wait",
+                duration: 1000 }
+        ];
+
+        log.debug("monitor", `[${monitor.name}] Executing ${exampleCommands.length} test commands`);
+
+        for (const command of exampleCommands) {
+            try {
+                await this.executeCommand(page, command);
+            } catch (error) {
+                log.warn("monitor", `[${monitor.name}] Test command failed: ${command.action} - ${error.message}`);
+                // Continue with other commands even if one fails
+            }
+        }
+    }
+
+    /**
+     * Execute a single test command
+     * @param {Page} page Playwright page instance
+     * @param {object} command Command to execute
+     * @returns {Promise<void>}
+     */
+    async executeCommand(page, command) {
+        switch (command.action) {
+            case "wait":
+                await page.waitForTimeout(command.duration || 1000);
+                break;
+
+            case "click":
+                if (command.selector) {
+                    await page.click(command.selector);
+                }
+                break;
+
+            case "type":
+                if (command.selector && command.text) {
+                    await page.type(command.selector, command.text);
+                }
+                break;
+
+            case "scroll":
+                if (command.direction === "down") {
+                    await page.mouse.wheel(0, command.pixels || 300);
+                } else if (command.direction === "up") {
+                    await page.mouse.wheel(0, -(command.pixels || 300));
+                }
+                break;
+
+            case "screenshot":
+                // Take additional screenshot during test
+                const timestamp = Date.now();
+                const filename = jwt.sign(monitor.id + "-" + timestamp, server.jwtSecret) + ".png";
+                await page.screenshot({
+                    path: path.join(Database.screenshotDir, filename),
+                });
+                break;
+
+            default:
+                log.warn("monitor", `Unknown test command: ${command.action}`);
         }
     }
 }

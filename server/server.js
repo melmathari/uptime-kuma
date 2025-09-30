@@ -37,7 +37,7 @@ if (!semver.satisfies(nodeVersion, requiredNodeVersions)) {
 }
 
 const args = require("args-parser")(process.argv);
-const { sleep, log, getRandomInt, genSecret, isDev } = require("../src/util");
+const { sleep, log, genSecret, isDev } = require("../src/util");
 const config = require("./config");
 
 log.debug("server", "Arguments");
@@ -880,6 +880,8 @@ let needSetup = false;
                     monitor.kafkaProducerAllowAutoTopicCreation;
                 bean.gamedigGivenPortOnly = monitor.gamedigGivenPortOnly;
                 bean.remote_browser = monitor.remote_browser;
+                bean.record_video = monitor.recordVideo;
+                bean.test_commands = monitor.testCommands;
                 bean.smtpSecurity = monitor.smtpSecurity;
                 bean.snmpVersion = monitor.snmpVersion;
                 bean.snmpOid = monitor.snmpOid;
@@ -1826,28 +1828,6 @@ async function pauseMonitor(userID, monitorID) {
     if (monitorID in server.monitorList) {
         await server.monitorList[monitorID].stop();
         delete server.monitorList[monitorID];
-    }
-}
-
-/**
- * Resume active monitors
- * @returns {Promise<void>}
- */
-async function startMonitors() {
-    let list = await R.find("monitor", " active = 1 ");
-
-    for (let monitor of list) {
-        server.monitorList[monitor.id] = monitor;
-    }
-
-    for (let monitor of list) {
-        try {
-            await monitor.start(io);
-        } catch (e) {
-            log.error("monitor", e);
-        }
-        // Give some delays, so all monitors won't make request at the same moment when just start the server.
-        await sleep(getRandomInt(300, 1000));
     }
 }
 

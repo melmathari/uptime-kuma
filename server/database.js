@@ -44,6 +44,12 @@ class Database {
     static screenshotDir;
 
     /**
+     * Chrome Video Recording Dir (Default: ./data/videos)
+     * @type {string}
+     */
+    static videoDir;
+
+    /**
      * SQLite file path (Default: ./data/kuma.db)
      * @type {string}
      */
@@ -152,6 +158,12 @@ class Database {
         Database.screenshotDir = path.join(Database.dataDir, "screenshots/");
         if (! fs.existsSync(Database.screenshotDir)) {
             fs.mkdirSync(Database.screenshotDir, { recursive: true });
+        }
+
+        // Create video dir
+        Database.videoDir = path.join(Database.dataDir, "videos/");
+        if (! fs.existsSync(Database.videoDir)) {
+            fs.mkdirSync(Database.videoDir, { recursive: true });
         }
 
         Database.dockerTLSDir = path.join(Database.dataDir, "docker-tls/");

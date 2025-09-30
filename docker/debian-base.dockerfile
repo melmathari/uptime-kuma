@@ -60,13 +60,33 @@ COPY ./docker/etc/sudoers /etc/sudoers
 
 
 # Full Base Image
-# MariaDB, Chromium and fonts
+# MariaDB, Chromium and fonts + Playwright system dependencies
 # Make sure to reuse the slim image here. Uncomment the above line if you want to build it from scratch.
 # FROM base2-slim AS base2
 FROM louislam/uptime-kuma:base2-slim AS base2
 ENV UPTIME_KUMA_ENABLE_EMBEDDED_MARIADB=1
 RUN apt update && \
-    apt --yes --no-install-recommends install chromium fonts-indic fonts-noto fonts-noto-cjk mariadb-server && \
+    apt --yes --no-install-recommends install \
+        chromium \
+        fonts-indic \
+        fonts-noto \
+        fonts-noto-cjk \
+        mariadb-server \
+        # Playwright system dependencies
+        libnss3 \
+        libnspr4 \
+        libatk-bridge2.0-0 \
+        libdrm2 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxrandr2 \
+        libgbm1 \
+        libxss1 \
+        libasound2 \
+        libatspi2.0-0 \
+        libgtk-3-0 \
+        libgdk-pixbuf2.0-0 \
+        libxshmfence1 && \
     rm -rf /var/lib/apt/lists/* && \
     apt --yes autoremove && \
     chown -R node:node /var/lib/mysql

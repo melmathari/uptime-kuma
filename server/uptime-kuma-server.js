@@ -189,6 +189,7 @@ class UptimeKumaServer {
     async initAfterDatabaseReady() {
         // Static
         this.app.use("/screenshots", express.static(Database.screenshotDir));
+        this.app.use("/videos", express.static(Database.videoDir));
 
         process.env.TZ = await this.getTimezone();
         dayjs.tz.setDefault(process.env.TZ);
